@@ -1,21 +1,12 @@
 # Research Logbook
 
-## August
+## Juni
 
-### 2024-08-30
-- Developing the new feature
-- Fixing the bug
-    ```
-    def test():
-        pass
-    ```
+### 2025-06-12
+- First Gathering
 
-## July
+## Juli
 
-### 2024-07-15
-- Researching the new feature
-- Updating the documentation
-    ```
-    def test():
-        pass
-    ```
+### 2025-07-02
+- Research Studi Literatur
+- Explore Dataset
