@@ -31,3 +31,13 @@
 ### 2025-08-14
 
 - Explore Dataset
+
+### 2025-08-26
+
+- Searching for a dataset EEG
+
+## September
+
+### 2025-09-01
+
+- Searching a literature review about EEG
