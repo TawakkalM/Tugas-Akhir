@@ -34,10 +34,18 @@
 
 ### 2025-08-26
 
-- Searching for a dataset EEG
+- Mencari dataset untuk EEG
 
 ## September
 
 ### 2025-09-01
 
-- Searching a literature review about EEG
+- Mencari literature review tentang EEG
+
+### 2025-09-11
+
+- Mengunduh dataset EEG (SEED)
+
+### 2025-09-15
+
+- Explore Dataset EEG (SEED)
