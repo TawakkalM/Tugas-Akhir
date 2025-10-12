@@ -49,3 +49,15 @@
 ### 2025-09-15
 
 - Explore Dataset EEG (SEED)
+
+## Oktober
+
+### 2025-10-11
+
+- Explore lebih dalam terkait label pada dataset
+
+### 2025-10-12
+
+- Explore lebih dalam terkait label pada dataset
+- Research studi literatur
+- Mencoba Read dan Export dataset EEG
