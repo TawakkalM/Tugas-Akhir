@@ -61,3 +61,7 @@
 - Explore lebih dalam terkait label pada dataset
 - Research studi literatur
 - Mencoba Read dan Export dataset EEG
+
+### 2025-10-27
+
+- Membuat plot perbandingan 1 channel dari 3 file berbeda antara MATLAB dengan Python
