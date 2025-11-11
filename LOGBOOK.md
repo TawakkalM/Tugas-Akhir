@@ -65,3 +65,13 @@
 ### 2025-10-27
 
 - Membuat plot perbandingan 1 channel dari 3 file berbeda antara MATLAB dengan Python
+
+### 2025-10-28
+
+- Membuat kode Data Reader
+
+## November
+
+### 2025-11-11
+
+- Memperbarui kode Data Reader
