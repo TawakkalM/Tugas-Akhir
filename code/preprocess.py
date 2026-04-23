@@ -67,6 +67,31 @@ def get_all_segments(segments):
     """
     return [(f"seg{i:02d}", seg) for i, seg in enumerate(segments)]
 
+def get_representative_segments(segments):
+    """
+    Ambil 3 segmen representatif:
+    - awal
+    - tengah
+    - akhir
+
+    Jika segmen < 3, ambil semua.
+    """
+    n = len(segments)
+
+    if n == 0:
+        return []
+
+    if n <= 3:
+        return [(f"seg{i:02d}", seg) for i, seg in enumerate(segments)]
+
+    idxs = [
+        0,          # awal
+        n // 2,     # tengah
+        n - 1       # akhir
+    ]
+
+    return [(f"seg{i:02d}", segments[i]) for i in idxs]
+
 
 def save_rgb_image(tensor, save_path):
     """
@@ -133,7 +158,7 @@ def precompute(data_dir, label_path, output_dir):
                 total_skipped += 1
                 continue
 
-            all_segs = get_all_segments(segments)
+            all_segs = get_representative_segments(segments)
 
             for seg_name, seg in all_segs:
                 # Nama file unik per subjek, sesi, trial, dan segmen
