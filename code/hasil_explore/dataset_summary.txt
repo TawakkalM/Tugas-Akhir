@@ -1,0 +1,18 @@
+=======================================================
+  RINGKASAN STATISTIK DATASET SEED
+=======================================================
+  Jumlah subjek       : 15
+  Jumlah trial total  : 675
+  Total segmen (est.) : 30,375
+
+  Kelas       Trial   Segmen  Dur. min  Dur. max  Dur. rata
+  -------------------------------------------------------
+  Negatif       225    9,990     206.0s     238.0s     224.0s
+  Netral        225    9,900     185.0s     235.0s     220.8s
+  Positif       225   10,485     195.0s     265.0s     234.0s
+
+  Durasi trial rata-rata : 226.3 detik
+  Segmen per trial rata-rata : 45.0
+  Window size  : 5 detik = 1000 titik
+  Sample rate  : 200 Hz
+=======================================================
