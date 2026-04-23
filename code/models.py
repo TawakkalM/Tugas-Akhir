@@ -34,8 +34,12 @@ def build_resnet18(num_classes=NUM_CLASSES, pretrained=True):
     in_features = model.fc.in_features          # = 512
     model.fc    = nn.Linear(in_features, num_classes)
 
-    # --- 3. Pastikan semua parameter bisa dilatih (unfrozen) ---
+    # --- 3. Freeze semua layer ---
     for param in model.parameters():
+        param.requires_grad = False
+
+    # --- 4. Unfreeze Unfreeze hanya FC ---
+    for param in model.fc.parameters():
         param.requires_grad = True
 
     return model
