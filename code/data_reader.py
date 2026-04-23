@@ -19,16 +19,16 @@ random.seed(RANDOM_SEED)
 np.random.seed(RANDOM_SEED)
 torch.manual_seed(RANDOM_SEED)
 
-# Parameter STFT 
-SAMPLE_RATE    = 200      # Hz
-WINDOW_SEC     = 5        # detik per segmen
-SAMPLE_LEN     = SAMPLE_RATE * WINDOW_SEC   # = 1000 titik
+# Parameter STFT (sesuai proposal)
+SAMPLE_RATE   = 200    # Hz
+WINDOW_SEC    = 5      # detik per segmen
+SAMPLE_LEN    = SAMPLE_RATE * WINDOW_SEC  # = 1000 titik
 
-STFT_NPERSEG   = 256      # window length STFT
-STFT_NOVERLAP  = 128      # 50% overlap  →  hop = 128
-STFT_NFFT      = 256      # ukuran FFT
+STFT_NPERSEG  = 256    # window length STFT
+STFT_NOVERLAP = 128    # 50% overlap → hop = 128
+STFT_NFFT     = 256    # ukuran FFT
 
-IMG_SIZE       = 224      # ukuran akhir gambar untuk ResNet-18
+IMG_SIZE      = 224    # ukuran akhir gambar untuk ResNet-18
 
 # ------------------------------------------------------------------
 # Pembagian 62 elektroda ke 3 zona otak (sesuai proposal & SEED)
@@ -65,7 +65,6 @@ SEED_62CH = [
     'CB1','O1','OZ','O2','CB2'
 ]
 
-# Indeks tiap zona dalam array 62 kanal
 def _zone_indices(zone_names):
     return [SEED_62CH.index(ch) for ch in zone_names if ch in SEED_62CH]
 
@@ -143,28 +142,28 @@ def explore_dataset(data_dir, label_path):
     print("TAHAP 2 — EKSPLORASI DATASET")
     print("="*60)
 
-    labels = read_labels(label_path)
+    labels    = read_labels(label_path)
     mat_files = list_mat_files(data_dir)
 
-    label_names = {0: 'Negatif', 1: 'Netral', 2: 'Positif'}
-    total_trials = 0
+    label_names        = {0: 'Negatif', 1: 'Netral', 2: 'Positif'}
+    total_trials       = 0
     total_segments_est = 0
 
     for mat_file in mat_files:
-        path = os.path.join(data_dir, mat_file)
-        subj_id = mat_file.split('_')[0]
-        mat = loadmat(path)
+        path     = os.path.join(data_dir, mat_file)
+        subj_id  = mat_file.split('_')[0]
+        mat      = loadmat(path)
         eeg_keys = detect_eeg_keys(mat)
 
         print(f"\n[Subjek {subj_id}] — {mat_file}")
         print(f"  Jumlah trial: {len(eeg_keys)}")
 
         for i, key in enumerate(eeg_keys):
-            eeg = mat[key]
+            eeg     = mat[key]
             n_ch, n_samp = eeg.shape
             dur_sec = n_samp / SAMPLE_RATE
-            n_seg = int(dur_sec // WINDOW_SEC)
-            lbl = labels[i] if i < len(labels) else '?'
+            n_seg   = int(dur_sec // WINDOW_SEC)
+            lbl     = labels[i] if i < len(labels) else '?'
             print(f"  Trial {i+1:2d} | shape: {n_ch}×{n_samp} "
                   f"| durasi: {dur_sec:.1f}s "
                   f"| segmen: {n_seg} "
@@ -191,11 +190,11 @@ def segment_eeg(eeg, window_len=SAMPLE_LEN):
     Sisa yang tidak habis dibagi dibuang.
     """
     n_ch, n_samp = eeg.shape
-    n_seg = n_samp // window_len
-    segments = []
+    n_seg        = n_samp // window_len
+    segments     = []
     for i in range(n_seg):
         start = i * window_len
-        seg = eeg[:, start:start + window_len]
+        seg   = eeg[:, start:start + window_len]
         segments.append(seg)
     return segments   # list of (62, 1000)
 
@@ -205,9 +204,6 @@ def compute_stft_spectrogram(channel_data):
     Hitung STFT untuk satu kanal sinyal EEG (panjang 1000).
     Magnitude dikonversi ke skala logaritmik (dB) agar
     frekuensi tinggi dan rendah sama-sama terlihat jelas.
-
-    Output shape: (n_freq_bins, time_frames)
-    di mana n_freq_bins sesuai dengan 0–75 Hz
     """
     _, _, Zxx = stft(
         channel_data,
@@ -216,9 +212,7 @@ def compute_stft_spectrogram(channel_data):
         noverlap=STFT_NOVERLAP,
         nfft=STFT_NFFT
     )
-    magnitude = np.abs(Zxx)
-
-    # Konversi ke skala log (dB) — mencegah frekuensi rendah mendominasi
+    magnitude    = np.abs(Zxx)
     magnitude_db = 10 * np.log10(magnitude + 1e-10)
 
     return magnitude_db   # shape: (129, time_frames)
@@ -239,19 +233,14 @@ def zone_average_spectrogram(segment, zone_indices):
 def normalize_spectrogram(spec):
     """
     Normalisasi spektrogram ke rentang [0, 255].
-
-    Menggunakan persentil 2–98 sebagai batas bawah dan atas
-    untuk memotong nilai ekstrem, sehingga gambar tidak
-    terlalu gelap atau terlalu terang.
+    Menggunakan persentil 2–98 untuk memotong nilai ekstrem.
     """
     p_low  = np.percentile(spec, 2)
     p_high = np.percentile(spec, 98)
 
-    # Hindari pembagian nol
     if p_high - p_low < 1e-10:
         return np.zeros_like(spec, dtype=np.uint8)
 
-    # Clip nilai di luar rentang persentil lalu normalisasi
     spec_clipped = np.clip(spec, p_low, p_high)
     normalized   = (spec_clipped - p_low) / (p_high - p_low) * 255
     return normalized.astype(np.uint8)
@@ -259,34 +248,25 @@ def normalize_spectrogram(spec):
 
 def segment_to_rgb_image(segment):
     """
-    Tahap 3 inti: Ubah satu segmen EEG (62 × 1000) menjadi
-    citra RGB 224×224 dengan pemetaan zona otak:
+    Ubah satu segmen EEG (62 × 1000) menjadi citra RGB 224×224.
       - Channel R (Merah)  = zona Frontal
       - Channel G (Hijau)  = zona Central & Temporal
       - Channel B (Biru)   = zona Parietal & Occipital
 
     Output: torch.Tensor (3, 224, 224) — siap masuk ResNet-18.
     """
-    # Hitung spektrogram rata-rata tiap zona
     spec_r = zone_average_spectrogram(segment, IDX_FRONTAL)
     spec_g = zone_average_spectrogram(segment, IDX_CENTRAL_T)
     spec_b = zone_average_spectrogram(segment, IDX_PARIETAL)
 
-    # Normalisasi masing-masing kanal ke [0, 255]
     r = normalize_spectrogram(spec_r)
     g = normalize_spectrogram(spec_g)
     b = normalize_spectrogram(spec_b)
 
-    # Susun menjadi gambar RGB (H, W, 3)
-    rgb = np.stack([r, g, b], axis=-1)   # (freq, time, 3)
-
-    # Konversi ke PIL Image lalu resize ke 224×224
-    img = Image.fromarray(rgb, mode='RGB')
-    img = img.resize((IMG_SIZE, IMG_SIZE), Image.BILINEAR)
-
-    # Konversi ke tensor PyTorch (3, 224, 224), nilai [0.0, 1.0]
-    to_tensor = transforms.ToTensor()
-    tensor = to_tensor(img)
+    rgb    = np.stack([r, g, b], axis=-1)
+    img    = Image.fromarray(rgb, mode='RGB')
+    img    = img.resize((IMG_SIZE, IMG_SIZE), Image.BILINEAR)
+    tensor = transforms.ToTensor()(img)
 
     return tensor   # torch.Tensor (3, 224, 224)
 
@@ -297,32 +277,28 @@ def segment_to_rgb_image(segment):
 
 def get_subject_ids(data_dir):
     """
-    Ambil daftar ID subjek unik dari nama file .mat,
-    urutkan secara numerik.
+    Ambil daftar ID subjek unik dari nama file .mat.
     Contoh: ['1', '2', ..., '15']
     """
-    mat_files = list_mat_files(data_dir)
+    mat_files   = list_mat_files(data_dir)
     subject_ids = []
     for f in mat_files:
         sid = f.split('_')[0]
         if sid not in subject_ids:
             subject_ids.append(sid)
-    return subject_ids   # list of string
+    return subject_ids
 
 
 def subject_wise_kfold(subject_ids, n_splits=5, seed=RANDOM_SEED):
     """
-    Bagi daftar subjek menjadi 5 fold.
-    Setiap fold berisi: train_subjects, val_subjects.
-
-    Dengan 15 subjek dan 5 fold → 3 subjek per fold untuk validasi.
-    Pembagian bersifat deterministik (seed=1907).
+    Bagi daftar subjek menjadi 5 fold secara deterministik.
+    Dengan 15 subjek → 3 subjek per fold untuk validasi.
     """
-    rng = np.random.default_rng(seed)
-    ids = np.array(subject_ids)
+    rng      = np.random.default_rng(seed)
+    ids      = np.array(subject_ids)
     shuffled = ids[rng.permutation(len(ids))]
 
-    folds = np.array_split(shuffled, n_splits)
+    folds  = np.array_split(shuffled, n_splits)
     result = []
     for i in range(n_splits):
         val_subjects   = list(folds[i])
@@ -330,7 +306,7 @@ def subject_wise_kfold(subject_ids, n_splits=5, seed=RANDOM_SEED):
                           for s in f if j != i]
         result.append((train_subjects, val_subjects))
 
-    return result   # list of (train_subjects, val_subjects)
+    return result
 
 
 def print_fold_info(folds):
@@ -346,22 +322,24 @@ def print_fold_info(folds):
 
 
 # ==============================================================
-# DATASET CLASS (Menggabungkan Tahap 2, 3, 4)
+# DATASET CLASS
+# Mendukung dua mode:
+#   1. Mode Gambar  — baca PNG hasil precompute.py (ringan di CPU)
+#   2. Mode Fallback — baca .mat langsung (default lama)
 # ==============================================================
 
 class EEGDataset(Dataset):
     """
     Dataset PyTorch untuk sinyal EEG SEED.
 
-    Alur kerja:
-    1. Baca semua file .mat dan metadata trial
-    2. Filter trial berdasarkan subjek (train/val dari subject-wise fold)
-    3. Saat __getitem__ dipanggil:
-       - Muat sinyal EEG trial
-       - Potong jadi segmen 5 detik (tanpa overlap)
-       - Pilih satu segmen secara acak
-       - Transformasi segmen → spektrogram RGB 224×224
-       - Kembalikan tensor (3, 224, 224) + label
+    Mode Gambar (img_dir diisi):
+    - __getitem__ hanya membaca file PNG yang sudah jadi
+    - Tidak ada komputasi STFT → sangat ringan di CPU
+    - GPU bisa dimanfaatkan maksimal
+
+    Mode Fallback (img_dir=None):
+    - Perilaku sama seperti versi sebelumnya
+    - Baca .mat → windowing acak → STFT → tensor
     """
 
     def __init__(self,
@@ -369,34 +347,79 @@ class EEGDataset(Dataset):
                  label_path='/kaggle/input/datasets/tawakkal19/kode/label.csv',
                  fold=0,
                  split='train',
-                 n_splits=5):
+                 n_splits=5,
+                 img_dir=None):
 
-        self.data_dir  = data_dir
-        self.split     = split
+        self.data_dir = data_dir
+        self.split    = split
+        self.img_dir  = img_dir
 
         # Baca label
         self.labels = read_labels(label_path)
 
-        # Bangun daftar semua (subject_id, path, eeg_key, label)
-        self.all_trials = self._collect_trials()
-
         # Buat pembagian subject-wise fold
-        subject_ids = get_subject_ids(data_dir)
-        folds       = subject_wise_kfold(subject_ids, n_splits=n_splits)
+        subject_ids      = get_subject_ids(data_dir)
+        folds            = subject_wise_kfold(subject_ids, n_splits=n_splits)
         train_subs, val_subs = folds[fold]
+        self.target_subs = train_subs if split == 'train' else val_subs
 
-        # Filter trial sesuai split
-        target_subs = train_subs if split == 'train' else val_subs
-        self.data = [t for t in self.all_trials if t[0] in target_subs]
+        if img_dir is not None and os.path.isdir(img_dir):
+            # Mode Gambar
+            self.mode = 'image'
+            self.data = self._collect_image_paths()
+            print(f"\n✓ EEGDataset [{split.upper()}] Fold {fold+1} "
+                  f"— MODE GAMBAR")
+            print(f"  Total gambar : {len(self.data):,}")
+        else:
+            # Mode Fallback
+            self.mode       = 'fallback'
+            self.all_trials = self._collect_trials()
+            self.data       = [t for t in self.all_trials
+                               if t[0] in self.target_subs]
+            print(f"\n✓ EEGDataset [{split.upper()}] Fold {fold+1} "
+                  f"— MODE FALLBACK")
+            print(f"  Total trial  : {len(self.data):,}")
 
-        print(f"\n✓ EEGDataset [{split.upper()}] Fold {fold+1} "
-              f"— {len(self.data)} trial "
-              f"dari {len(target_subs)} subjek")
+    # ----------------------------------------------------------
+    def _collect_image_paths(self):
+        """
+        Kumpulkan path semua PNG dari img_dir
+        yang subj_id-nya ada di target_subs.
+
+        Konvensi nama file dari preprocess.py (format semua segmen):
+          subj{id}_sesi{tanggal}_trial{idx}_seg{nomor}_label{label}.png
+          Contoh: subj01_sesi20131027_trial07_seg03_label2.png
+
+        Ekstraksi:
+          - subj_id : parts[0] → 'subj01' → '1'
+          - label   : parts[-1] → 'label2.png' → 2
+        """
+        all_files = sorted([
+            f for f in os.listdir(self.img_dir)
+            if f.endswith('.png')
+        ])
+
+        result = []
+        for fname in all_files:
+            parts   = fname.split('_')
+
+            # subj_id selalu di bagian pertama: 'subj01' → '1'
+            subj_id = parts[0].replace('subj', '').lstrip('0') or '0'
+
+            if subj_id not in self.target_subs:
+                continue
+
+            # label selalu di bagian terakhir: 'label2.png' → 2
+            label_part = parts[-1].replace('label', '').replace('.png', '')
+            label      = int(label_part)
+            result.append((os.path.join(self.img_dir, fname), label))
+
+        return result
 
     # ----------------------------------------------------------
     def _collect_trials(self):
         """Kumpulkan metadata semua trial dari semua file .mat."""
-        trials = []
+        trials    = []
         mat_files = list_mat_files(self.data_dir)
         for mat_file in mat_files:
             path    = os.path.join(self.data_dir, mat_file)
@@ -413,22 +436,21 @@ class EEGDataset(Dataset):
         return len(self.data)
 
     def __getitem__(self, idx):
-        subj_id, path, key, label = self.data[idx]
+        if self.mode == 'image':
+            # Hanya baca PNG — ringan di CPU
+            img_path, label = self.data[idx]
+            img    = Image.open(img_path).convert('RGB')
+            tensor = transforms.ToTensor()(img)
+            return tensor, torch.tensor(label, dtype=torch.long)
 
-        # Muat sinyal EEG (62 × N)
-        eeg = loadmat(path)[key]
-
-        # Potong menjadi segmen 5 detik
-        segments = segment_eeg(eeg)
-
-        # Pilih satu segmen secara acak
-        seg = random.choice(segments)
-
-        # Transformasi segmen → citra RGB 224×224
-        tensor = segment_to_rgb_image(seg)
-
-        label_tensor = torch.tensor(label, dtype=torch.long)
-        return tensor, label_tensor
+        else:
+            # Mode fallback — baca .mat → STFT
+            subj_id, path, key, label = self.data[idx]
+            eeg      = loadmat(path)[key]
+            segments = segment_eeg(eeg)
+            seg      = random.choice(segments)
+            tensor   = segment_to_rgb_image(seg)
+            return tensor, torch.tensor(label, dtype=torch.long)
 
 
 # ==============================================================
@@ -439,30 +461,25 @@ if __name__ == "__main__":
     DATA_DIR   = "/kaggle/input/datasets/tawakkal19/eeg-seed-200hz/Preprocessed_EEG"
     LABEL_PATH = "/kaggle/input/datasets/tawakkal19/kode-eeg/label.csv"
 
-    # --- Tahap 2: Eksplorasi dataset ---
     explore_dataset(DATA_DIR, LABEL_PATH)
 
-    # --- Tahap 4: Cek pembagian fold ---
     subject_ids = get_subject_ids(DATA_DIR)
-    folds = subject_wise_kfold(subject_ids)
+    folds       = subject_wise_kfold(subject_ids)
     print_fold_info(folds)
 
-    # --- Uji Dataset class (Fold 1) ---
-    print("=== Uji EEGDataset ===")
+    print("=== Uji EEGDataset (mode fallback) ===")
     train_ds = EEGDataset(DATA_DIR, LABEL_PATH, fold=0, split='train')
     val_ds   = EEGDataset(DATA_DIR, LABEL_PATH, fold=0, split='val')
 
     print(f"Train: {len(train_ds)} trial | Val: {len(val_ds)} trial")
 
-    # Ambil satu sampel dan periksa shape
     img_tensor, lbl = train_ds[0]
-    label_names = {0: 'Negatif', 1: 'Netral', 2: 'Positif'}
+    label_names     = {0: 'Negatif', 1: 'Netral', 2: 'Positif'}
     print(f"\nContoh output:")
-    print(f"  Tensor shape : {img_tensor.shape}  (harusnya: torch.Size([3, 224, 224]))")
+    print(f"  Tensor shape : {img_tensor.shape}")
     print(f"  Label        : {lbl.item()} ({label_names[lbl.item()]})")
     print(f"  Nilai min/max: {img_tensor.min():.3f} / {img_tensor.max():.3f}")
 
-    # Visualisasi spektrogram RGB dari satu sampel
     img_np = img_tensor.permute(1, 2, 0).numpy()
     plt.figure(figsize=(6, 6))
     plt.imshow(img_np)

@@ -10,6 +10,7 @@ from sklearn.metrics import precision_score, recall_score, f1_score, confusion_m
 import matplotlib.pyplot as plt
 import matplotlib.ticker as ticker
 import seaborn as sns
+os.environ['WANDB_SILENT'] = 'true'
 import wandb
 from tqdm import tqdm
 
@@ -369,6 +370,13 @@ def run_all_folds(args):
     )
     print(f"\nDevice: {device}")
 
+    # Info mode dataset
+    if args.img_dir is not None:
+        print(f"[INFO] Mode Dataset : GAMBAR PNG (precomputed)")
+        print(f"[INFO] img_dir      : {args.img_dir}")
+    else:
+        print(f"[INFO] Mode Dataset : FALLBACK (baca .mat langsung)")
+
     # Buat folder output
     save_dir = os.path.join(args.checkpoint_dir, args.model)
     os.makedirs(save_dir, exist_ok=True)
@@ -400,10 +408,12 @@ def run_all_folds(args):
         # Dataset & DataLoader
         train_ds = EEGDataset(args.data_dir, args.label_path,
                               fold=fold, split='train',
-                              n_splits=args.n_splits)
+                              n_splits=args.n_splits,
+                              img_dir=args.img_dir)
         val_ds   = EEGDataset(args.data_dir, args.label_path,
                               fold=fold, split='val',
-                              n_splits=args.n_splits)
+                              n_splits=args.n_splits,
+                              img_dir=args.img_dir)
 
         train_loader = DataLoader(train_ds, batch_size=args.batch_size,
                                   shuffle=True,
@@ -524,8 +534,12 @@ def parse_args():
     )
 
     # Data
-    parser.add_argument('--data-dir',    type=str,   default='/kaggle/input/datasets/tawakkal19/eeg-seed-200hz/Preprocessed_EEG')
-    parser.add_argument('--label-path',  type=str,   default='/kaggle/input/datasets/tawakkal19/kode-eeg/label.csv')
+    parser.add_argument('--data-dir',    type=str,   default='/kaggle/input/datasets/tawakkal19/kode_dataset_eeg/Preprocessed_EEG')
+    parser.add_argument('--label-path',  type=str,   default='/kaggle/input/datasets/tawakkal19/kode_dataset_eeg/label.csv')
+    parser.add_argument('--img-dir',     type=str,   default=None,
+                        help='Path ke folder PNG hasil preprocess.py. '
+                             'Jika diisi → mode gambar (ringan di CPU). '
+                             'Jika tidak diisi → mode fallback (baca .mat langsung).')
 
     # Model
     parser.add_argument('--model',       type=str,   default='resnet18',
