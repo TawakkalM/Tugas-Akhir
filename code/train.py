@@ -1,4 +1,3 @@
-# %load train.py
 import os
 import argparse
 import time
@@ -47,23 +46,16 @@ def init_wandb(args, fold=None, run_type='fold'):
         group   = args.model,
         job_type= run_type,
         config  = {
-            "model"            : args.model,
-            "strategy"         : "progressive_unfreezing",
-            "phase1_layers"    : "FC only",
-            "phase2_epoch"     : args.phase2_epoch,
-            "phase2_layers"    : "layer4 + FC",
-            "phase3_epoch"     : args.phase3_epoch,
-            "phase3_layers"    : "layer3 + layer4 + FC",
-            "pretrained"       : True,
-            "fold"             : fold + 1 if fold is not None else "all",
-            "n_splits"         : args.n_splits,
-            "epochs"           : args.epochs,
-            "batch_size"       : args.batch_size,
-            "lr"               : args.lr,
-            "weight_decay"     : args.weight_decay,
-            "patience"         : args.patience,
-            "img_dir"          : args.img_dir,
-            "num_classes"      : NUM_CLASSES,
+            "model"        : args.model,
+            "fold"         : fold + 1 if fold is not None else "all",
+            "n_splits"     : args.n_splits,
+            "epochs"       : args.epochs,
+            "batch_size"   : args.batch_size,
+            "lr"           : args.lr,
+            "weight_decay" : args.weight_decay,
+            "patience"     : args.patience,
+            "img_dir"      : args.img_dir,
+            "num_classes"  : NUM_CLASSES,
         },
         reinit = True,
     )
@@ -207,24 +199,23 @@ def train_one_fold(fold, model, train_loader, val_loader, args, device, save_dir
     for epoch in range(1, args.epochs + 1):
 
         # --- Progressive Unfreezing ---
-        # Fase 2: buka layer4 mulai epoch phase2_epoch
+        # Fase 2: buka layer4, lr sangat kecil agar tidak agresif
         if epoch == args.phase2_epoch:
             print(f"\n  [Fase 2] Epoch {epoch} — membuka layer4")
             unfreeze_layers(model, phase=2)
-            # Reset optimizer agar parameter baru ikut dioptimasi
             optimizer = torch.optim.Adam(
                 filter(lambda p: p.requires_grad, model.parameters()),
-                lr=args.lr * 0.1,        # lr lebih kecil untuk layer lama
+                lr=args.lr * 0.01,       # 1e-4 × 0.01 = 1e-6
                 weight_decay=args.weight_decay
             )
 
-        # Fase 3: buka layer3 mulai epoch phase3_epoch
+        # Fase 3: buka layer3, lr lebih kecil lagi
         elif epoch == args.phase3_epoch:
             print(f"\n  [Fase 3] Epoch {epoch} — membuka layer3")
             unfreeze_layers(model, phase=3)
             optimizer = torch.optim.Adam(
                 filter(lambda p: p.requires_grad, model.parameters()),
-                lr=args.lr * 0.01,       # lr lebih kecil lagi
+                lr=args.lr * 0.001,      # 1e-4 × 0.001 = 1e-7
                 weight_decay=args.weight_decay
             )
         model.train()
@@ -370,7 +361,7 @@ def parse_args():
     parser.add_argument('--batch-size',   type=int,   default=32)
     parser.add_argument('--lr',           type=float, default=1e-4)
     parser.add_argument('--weight-decay', type=float, default=1e-4)
-    parser.add_argument('--patience',     type=int,   default=10)
+    parser.add_argument('--patience',     type=int,   default=15)
 
     # Progressive unfreezing — epoch mulai tiap fase
     parser.add_argument('--phase2-epoch', type=int, default=11,
