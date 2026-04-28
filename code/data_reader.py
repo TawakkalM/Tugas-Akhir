@@ -7,485 +7,242 @@ import torch
 from torch.utils.data import Dataset
 from scipy.io import loadmat
 from scipy.signal import stft
-import matplotlib.pyplot as plt
 from PIL import Image
 import torchvision.transforms as transforms
+from tqdm import tqdm
 
 # ==============================================================
-# KONFIGURASI GLOBAL
+# 1. KONFIGURASI GLOBAL & PARAMETER PENELITIAN
 # ==============================================================
-RANDOM_SEED = 1907
+RANDOM_SEED = 1907 # Sesuai ketetapan reproduktibilitas
 random.seed(RANDOM_SEED)
 np.random.seed(RANDOM_SEED)
 torch.manual_seed(RANDOM_SEED)
 
-# Parameter STFT (sesuai proposal)
+# Parameter Sinyal & STFT (Sesuai Bab 3.2 Laporan Tugas Akhir)
 SAMPLE_RATE   = 200    # Hz
 WINDOW_SEC    = 5      # detik per segmen
-SAMPLE_LEN    = SAMPLE_RATE * WINDOW_SEC  # = 1000 titik
+SAMPLE_LEN    = SAMPLE_RATE * WINDOW_SEC  # 1000 titik sampel
+MAX_SEGMENTS  = 45     # Maksimal segmen per trial (Target ~30.375 gambar)
 
-STFT_NPERSEG  = 256    # window length STFT
-STFT_NOVERLAP = 128    # 50% overlap → hop = 128
-STFT_NFFT     = 256    # ukuran FFT
-
-IMG_SIZE      = 224    # ukuran akhir gambar untuk ResNet-18
+STFT_NPERSEG  = 256    # Window length
+STFT_NOVERLAP = 128    # Overlap 50%
+IMG_SIZE      = 224    # Dimensi input ResNet-18
 
 # ------------------------------------------------------------------
-# Pembagian 62 elektroda ke 3 zona otak (sesuai proposal & SEED)
-# Merah  = Frontal
-# Hijau  = Central & Temporal
-# Biru   = Parietal & Occipital
+# [V2] Pemetaan RGB berdasarkan PITA FREKUENSI otak
+# (bukan zona otak seperti sebelumnya)
+#
+# Dasar ilmiah: Zheng & Lu (2015) — paper dataset SEED — membuktikan
+# bahwa pita beta dan gamma di area frontal paling diskriminatif
+# untuk membedakan emosi positif, netral, dan negatif.
+#
+# Channel R = Theta + Alpha (4–13 Hz) — emosi, memori kerja
+# Channel G = Beta           (13–30 Hz) — kognisi, regulasi emosi
+# Channel B = Gamma          (30–45 Hz) — pemrosesan tingkat tinggi
+#
+# Seluruh 62 kanal digunakan untuk SEMUA saluran warna,
+# namun dikompres berbeda berdasarkan pita frekuensi.
 # ------------------------------------------------------------------
-FRONTAL_CH = [
-    'FP1','FPZ','FP2','AF3','AF4',
-    'F7','F5','F3','F1','FZ','F2','F4','F6','F8',
-    'FT7','FC5','FC3','FC1','FCZ','FC2','FC4','FC6','FT8'
-]
 
-CENTRAL_TEMPORAL_CH = [
-    'T7','C5','C3','C1','CZ','C2','C4','C6','T8',
-    'TP7','CP5','CP3','CP1','CPZ','CP2','CP4','CP6','TP8'
-]
+# Rentang frekuensi (Hz) per saluran warna
+FREQ_THETA_ALPHA = (4,  13)   # R — Theta + Alpha
+FREQ_BETA        = (13, 30)   # G — Beta
+FREQ_GAMMA       = (30, 45)   # B — Gamma (batas atas 45 Hz, cukup untuk EEG emosi)
 
-PARIETAL_OCCIPITAL_CH = [
-    'P7','P5','P3','P1','PZ','P2','P4','P6','P8',
-    'PO7','PO5','PO3','POZ','PO4','PO6','PO8',
-    'CB1','O1','OZ','O2','CB2'
-]
-
-# Urutan lengkap 62 kanal SEED (indeks 0–61)
+# Semua 62 kanal digunakan untuk ketiga saluran
 SEED_62CH = [
-    'FP1','FPZ','FP2','AF3','AF4',
-    'F7','F5','F3','F1','FZ','F2','F4','F6','F8',
-    'FT7','FC5','FC3','FC1','FCZ','FC2','FC4','FC6','FT8',
-    'T7','C5','C3','C1','CZ','C2','C4','C6','T8',
-    'TP7','CP5','CP3','CP1','CPZ','CP2','CP4','CP6','TP8',
-    'P7','P5','P3','P1','PZ','P2','P4','P6','P8',
-    'PO7','PO5','PO3','POZ','PO4','PO6','PO8',
+    'FP1','FPZ','FP2','AF3','AF4','F7','F5','F3','F1','FZ','F2','F4','F6','F8',
+    'FT7','FC5','FC3','FC1','FCZ','FC2','FC4','FC6','FT8','T7','C5','C3','C1','CZ',
+    'C2','C4','C6','T8','TP7','CP5','CP3','CP1','CPZ','CP2','CP4','CP6','TP8','P7',
+    'P5','P3','P1','PZ','P2','P4','P6','P8','PO7','PO5','PO3','POZ','PO4','PO6','PO8',
     'CB1','O1','OZ','O2','CB2'
 ]
 
-def _zone_indices(zone_names):
-    return [SEED_62CH.index(ch) for ch in zone_names if ch in SEED_62CH]
-
-IDX_FRONTAL   = _zone_indices(FRONTAL_CH)
-IDX_CENTRAL_T = _zone_indices(CENTRAL_TEMPORAL_CH)
-IDX_PARIETAL  = _zone_indices(PARIETAL_OCCIPITAL_CH)
-
+ALL_CH_IDX = list(range(len(SEED_62CH)))  # indeks 0–61
 
 # ==============================================================
-# TAHAP 2 — FUNGSI UTILITAS & EKSPLORASI DATA
+# 2. LOGIKA PEMROSESAN SPEKTROGRAM RGB
 # ==============================================================
 
-def detect_eeg_keys(mat):
-    """
-    Deteksi nama variabel EEG dalam file .mat secara otomatis.
-    Kembalikan list key terurut (eeg1 … eeg15).
-    """
-    valid_keys = [k for k in mat.keys() if not k.startswith("__")]
-    prefix = next(
-        (k.split("_eeg1")[0] for k in valid_keys if "_eeg1" in k),
-        next((k.split("_eeg")[0] for k in valid_keys if "_eeg" in k), None)
-    )
-    if prefix is None:
-        print(f"[WARN] Prefix EEG tidak ditemukan. Keys: {valid_keys}")
-        return []
-    eeg_keys = [f"{prefix}_eeg{i}" for i in range(1, 16)
-                if f"{prefix}_eeg{i}" in valid_keys]
-    eeg_keys.sort(key=lambda x: int(re.findall(r'\d+', x)[-1]))
-    return eeg_keys
+class SpectrogramProcessor:
+    """Kelas untuk mentransformasi segmen sinyal menjadi citra spektrogram RGB."""
 
+    @staticmethod
+    def compute_stft_magnitude(channel_data):
+        """Menghitung STFT Magnitude dengan skala logaritmik (dB)."""
+        _, _, Zxx = stft(channel_data, fs=SAMPLE_RATE,
+                         nperseg=STFT_NPERSEG, noverlap=STFT_NOVERLAP)
+        magnitude = np.abs(Zxx)
+        return 10 * np.log10(magnitude + 1e-10)
 
-def read_labels(label_path):
-    """
-    Baca label dari CSV. Label SEED asli: -1 / 0 / 1.
-    Di-mapping ke: 0 (Negatif) / 1 (Netral) / 2 (Positif).
-    """
-    df = pd.read_csv(label_path, sep=';', encoding='utf-8-sig')
-    df.columns = df.columns.str.strip()
-    if not {'filmname', 'label'}.issubset(df.columns):
-        raise ValueError(f"Kolom CSV tidak sesuai: {list(df.columns)}")
+    @staticmethod
+    def normalize_spec(spec):
+        """Normalisasi Min-Max dengan clipping persentil 2-98."""
+        p_low, p_high = np.percentile(spec, [2, 98])
+        if p_high - p_low < 1e-10:
+            return np.zeros_like(spec, dtype=np.uint8)
+        spec_clipped = np.clip(spec, p_low, p_high)
+        return ((spec_clipped - p_low) / (p_high - p_low) * 255).astype(np.uint8)
 
-    labels = df['label'].astype(int).tolist()
-    unique = sorted(set(labels))
-    print(f"[INFO] Label unik dalam CSV: {unique}")
-
-    if unique == [-1, 0, 1]:
-        labels = [l + 1 for l in labels]
-        print("[INFO] Mapping: -1→0 (Neg), 0→1 (Net), 1→2 (Pos)")
-    elif unique == [1, 2, 3]:
-        labels = [l - 1 for l in labels]
-        print("[INFO] Mapping: 1→0, 2→1, 3→2")
-    elif unique == [0, 1, 2]:
-        print("[INFO] Label sudah dalam rentang [0,1,2]")
-    else:
-        raise ValueError(f"Label tidak dikenal: {unique}")
-
-    return labels
-
-
-def list_mat_files(data_dir):
-    """Ambil semua file .mat, urutkan berdasarkan nomor subjek."""
-    files = [f for f in os.listdir(data_dir)
-             if f.endswith('.mat') and f[0].isdigit()]
-    files.sort(key=lambda f: int(f.split('_')[0]))
-    return files
-
-
-def explore_dataset(data_dir, label_path):
-    """
-    Tahap 2: Eksplorasi dataset.
-    Cetak statistik dimensi sinyal, jumlah segmen estimasi,
-    dan distribusi kelas per subjek.
-    """
-    print("\n" + "="*60)
-    print("TAHAP 2 — EKSPLORASI DATASET")
-    print("="*60)
-
-    labels    = read_labels(label_path)
-    mat_files = list_mat_files(data_dir)
-
-    label_names        = {0: 'Negatif', 1: 'Netral', 2: 'Positif'}
-    total_trials       = 0
-    total_segments_est = 0
-
-    for mat_file in mat_files:
-        path     = os.path.join(data_dir, mat_file)
-        subj_id  = mat_file.split('_')[0]
-        mat      = loadmat(path)
-        eeg_keys = detect_eeg_keys(mat)
-
-        print(f"\n[Subjek {subj_id}] — {mat_file}")
-        print(f"  Jumlah trial: {len(eeg_keys)}")
-
-        for i, key in enumerate(eeg_keys):
-            eeg     = mat[key]
-            n_ch, n_samp = eeg.shape
-            dur_sec = n_samp / SAMPLE_RATE
-            n_seg   = int(dur_sec // WINDOW_SEC)
-            lbl     = labels[i] if i < len(labels) else '?'
-            print(f"  Trial {i+1:2d} | shape: {n_ch}×{n_samp} "
-                  f"| durasi: {dur_sec:.1f}s "
-                  f"| segmen: {n_seg} "
-                  f"| label: {label_names.get(lbl, lbl)}")
-            total_segments_est += n_seg
-
-        total_trials += len(eeg_keys)
-
-    print(f"\n{'='*60}")
-    print(f"Total file .mat   : {len(mat_files)}")
-    print(f"Total trial       : {total_trials}")
-    print(f"Estimasi segmen   : {total_segments_est}")
-    print(f"{'='*60}\n")
-
-
-# ==============================================================
-# TAHAP 3 — PRA-PEMROSESAN & TRANSFORMASI STFT → RGB
-# ==============================================================
-
-def segment_eeg(eeg, window_len=SAMPLE_LEN):
-    """
-    Potong sinyal EEG (62 × N) menjadi segmen-segmen
-    berukuran (62 × window_len) tanpa overlap.
-    Sisa yang tidak habis dibagi dibuang.
-    """
-    n_ch, n_samp = eeg.shape
-    n_seg        = n_samp // window_len
-    segments     = []
-    for i in range(n_seg):
-        start = i * window_len
-        seg   = eeg[:, start:start + window_len]
-        segments.append(seg)
-    return segments   # list of (62, 1000)
-
-
-def compute_stft_spectrogram(channel_data):
-    """
-    Hitung STFT untuk satu kanal sinyal EEG (panjang 1000).
-    Magnitude dikonversi ke skala logaritmik (dB) agar
-    frekuensi tinggi dan rendah sama-sama terlihat jelas.
-    """
-    _, _, Zxx = stft(
-        channel_data,
-        fs=SAMPLE_RATE,
-        nperseg=STFT_NPERSEG,
-        noverlap=STFT_NOVERLAP,
-        nfft=STFT_NFFT
-    )
-    magnitude    = np.abs(Zxx)
-    magnitude_db = 10 * np.log10(magnitude + 1e-10)
-
-    return magnitude_db   # shape: (129, time_frames)
-
-
-def zone_average_spectrogram(segment, zone_indices):
-    """
-    Rata-ratakan spektrogram STFT dari semua kanal dalam satu zona.
-    Output: satu spektrogram 2D representatif zona tersebut.
-    """
-    specs = []
-    for idx in zone_indices:
-        spec = compute_stft_spectrogram(segment[idx])
-        specs.append(spec)
-    return np.mean(specs, axis=0)   # (129, time_frames)
-
-
-def normalize_spectrogram(spec):
-    """
-    Normalisasi spektrogram ke rentang [0, 255].
-    Menggunakan persentil 2–98 untuk memotong nilai ekstrem.
-    """
-    p_low  = np.percentile(spec, 2)
-    p_high = np.percentile(spec, 98)
-
-    if p_high - p_low < 1e-10:
-        return np.zeros_like(spec, dtype=np.uint8)
-
-    spec_clipped = np.clip(spec, p_low, p_high)
-    normalized   = (spec_clipped - p_low) / (p_high - p_low) * 255
-    return normalized.astype(np.uint8)
-
-
-def segment_to_rgb_image(segment):
-    """
-    Ubah satu segmen EEG (62 × 1000) menjadi citra RGB 224×224.
-      - Channel R (Merah)  = zona Frontal
-      - Channel G (Hijau)  = zona Central & Temporal
-      - Channel B (Biru)   = zona Parietal & Occipital
-
-    Output: torch.Tensor (3, 224, 224) — siap masuk ResNet-18.
-    """
-    spec_r = zone_average_spectrogram(segment, IDX_FRONTAL)
-    spec_g = zone_average_spectrogram(segment, IDX_CENTRAL_T)
-    spec_b = zone_average_spectrogram(segment, IDX_PARIETAL)
-
-    r = normalize_spectrogram(spec_r)
-    g = normalize_spectrogram(spec_g)
-    b = normalize_spectrogram(spec_b)
-
-    rgb    = np.stack([r, g, b], axis=-1)
-    img    = Image.fromarray(rgb, mode='RGB')
-    img    = img.resize((IMG_SIZE, IMG_SIZE), Image.BILINEAR)
-    tensor = transforms.ToTensor()(img)
-
-    return tensor   # torch.Tensor (3, 224, 224)
-
-
-# ==============================================================
-# TAHAP 4 — PEMBAGIAN DATA (SUBJECT-WISE 5-FOLD)
-# ==============================================================
-
-def get_subject_ids(data_dir):
-    """
-    Ambil daftar ID subjek unik dari nama file .mat.
-    Contoh: ['1', '2', ..., '15']
-    """
-    mat_files   = list_mat_files(data_dir)
-    subject_ids = []
-    for f in mat_files:
-        sid = f.split('_')[0]
-        if sid not in subject_ids:
-            subject_ids.append(sid)
-    return subject_ids
-
-
-def subject_wise_kfold(subject_ids, n_splits=5, seed=RANDOM_SEED):
-    """
-    Bagi daftar subjek menjadi 5 fold secara deterministik.
-    Dengan 15 subjek → 3 subjek per fold untuk validasi.
-    """
-    rng      = np.random.default_rng(seed)
-    ids      = np.array(subject_ids)
-    shuffled = ids[rng.permutation(len(ids))]
-
-    folds  = np.array_split(shuffled, n_splits)
-    result = []
-    for i in range(n_splits):
-        val_subjects   = list(folds[i])
-        train_subjects = [s for j, f in enumerate(folds)
-                          for s in f if j != i]
-        result.append((train_subjects, val_subjects))
-
-    return result
-
-
-def print_fold_info(folds):
-    """Cetak ringkasan pembagian subjek tiap fold."""
-    print("\n" + "="*60)
-    print("TAHAP 4 — SUBJECT-WISE 5-FOLD CROSS VALIDATION")
-    print("="*60)
-    for i, (train_subs, val_subs) in enumerate(folds):
-        print(f"\nFold {i+1}:")
-        print(f"  Train ({len(train_subs)} subjek): {sorted(train_subs, key=int)}")
-        print(f"  Val   ({len(val_subs)} subjek) : {sorted(val_subs, key=int)}")
-    print()
-
-
-# ==============================================================
-# DATASET CLASS
-# Mendukung dua mode:
-#   1. Mode Gambar  — baca PNG hasil precompute.py (ringan di CPU)
-#   2. Mode Fallback — baca .mat langsung (default lama)
-# ==============================================================
-
-class EEGDataset(Dataset):
-    """
-    Dataset PyTorch untuk sinyal EEG SEED.
-
-    Mode Gambar (img_dir diisi):
-    - __getitem__ hanya membaca file PNG yang sudah jadi
-    - Tidak ada komputasi STFT → sangat ringan di CPU
-    - GPU bisa dimanfaatkan maksimal
-
-    Mode Fallback (img_dir=None):
-    - Perilaku sama seperti versi sebelumnya
-    - Baca .mat → windowing acak → STFT → tensor
-    """
-
-    def __init__(self,
-                 data_dir='/kaggle/input/datasets/tawakkal19/eeg-seed-200hz/Preprocessed_EEG',
-                 label_path='/kaggle/input/datasets/tawakkal19/kode/label.csv',
-                 fold=0,
-                 split='train',
-                 n_splits=5,
-                 img_dir=None):
-
-        self.data_dir = data_dir
-        self.split    = split
-        self.img_dir  = img_dir
-
-        # Baca label
-        self.labels = read_labels(label_path)
-
-        # Buat pembagian subject-wise fold
-        subject_ids      = get_subject_ids(data_dir)
-        folds            = subject_wise_kfold(subject_ids, n_splits=n_splits)
-        train_subs, val_subs = folds[fold]
-        self.target_subs = train_subs if split == 'train' else val_subs
-
-        if img_dir is not None and os.path.isdir(img_dir):
-            # Mode Gambar
-            self.mode = 'image'
-            self.data = self._collect_image_paths()
-            print(f"\n✓ EEGDataset [{split.upper()}] Fold {fold+1} "
-                  f"— MODE GAMBAR")
-            print(f"  Total gambar : {len(self.data):,}")
-        else:
-            # Mode Fallback
-            self.mode       = 'fallback'
-            self.all_trials = self._collect_trials()
-            self.data       = [t for t in self.all_trials
-                               if t[0] in self.target_subs]
-            print(f"\n✓ EEGDataset [{split.upper()}] Fold {fold+1} "
-                  f"— MODE FALLBACK")
-            print(f"  Total trial  : {len(self.data):,}")
-
-    # ----------------------------------------------------------
-    def _collect_image_paths(self):
+    @staticmethod
+    def extract_freq_band(spec_db, freqs, freq_range):
         """
-        Kumpulkan path semua PNG dari img_dir
-        yang subj_id-nya ada di target_subs.
-
-        Konvensi nama file dari preprocess.py (format semua segmen):
-          subj{id}_sesi{tanggal}_trial{idx}_seg{nomor}_label{label}.png
-          Contoh: subj01_sesi20131027_trial07_seg03_label2.png
-
-        Ekstraksi:
-          - subj_id : parts[0] → 'subj01' → '1'
-          - label   : parts[-1] → 'label2.png' → 2
+        Ekstrak dan rata-ratakan baris frekuensi dalam rentang tertentu.
+        spec_db : (n_freq, n_time)
+        freqs   : array frekuensi dari STFT
+        freq_range : (f_low, f_high) dalam Hz
         """
-        all_files = sorted([
-            f for f in os.listdir(self.img_dir)
-            if f.endswith('.png')
+        mask = (freqs >= freq_range[0]) & (freqs < freq_range[1])
+        if not np.any(mask):
+            return np.zeros(spec_db.shape[1])
+        return np.mean(spec_db[mask, :], axis=0)   # rata-rata baris → (n_time,)
+
+    def generate_rgb(self, segment):
+        """
+        [V2] Bangun citra RGB berdasarkan PITA FREKUENSI dari seluruh 62 kanal.
+
+        Proses:
+        1. Hitung STFT semua 62 kanal
+        2. Untuk setiap kanal, ekstrak energi per pita frekuensi
+        3. Rata-ratakan energi tiap pita dari semua kanal → 3 spektrogram 1D per waktu
+        4. Susun sebagai gambar RGB 2D (frekuensi sudah terkompres ke sumbu warna)
+
+        Output: PIL Image (224×224, mode RGB)
+        """
+        # Hitung STFT untuk semua 62 kanal sekaligus
+        # freqs: array frekuensi, shape (n_freq,)
+        freqs, _, Zxx_first = stft(segment[0], fs=SAMPLE_RATE,
+                                   nperseg=STFT_NPERSEG, noverlap=STFT_NOVERLAP)
+
+        # Kumpulkan spektrogram semua kanal
+        all_specs = []
+        for ch_idx in ALL_CH_IDX:
+            _, _, Zxx = stft(segment[ch_idx], fs=SAMPLE_RATE,
+                             nperseg=STFT_NPERSEG, noverlap=STFT_NOVERLAP)
+            spec_db = 10 * np.log10(np.abs(Zxx) + 1e-10)  # (n_freq, n_time)
+            all_specs.append(spec_db)
+
+        # all_specs: (62, n_freq, n_time)
+        all_specs = np.array(all_specs)
+
+        # Rata-rata energi per pita frekuensi dari semua 62 kanal
+        # Hasil: (n_freq, n_time) rata-rata semua kanal
+        mean_spec = np.mean(all_specs, axis=0)  # (n_freq, n_time)
+
+        # Masking per pita frekuensi
+        mask_r = (freqs >= FREQ_THETA_ALPHA[0]) & (freqs < FREQ_THETA_ALPHA[1])
+        mask_g = (freqs >= FREQ_BETA[0])         & (freqs < FREQ_BETA[1])
+        mask_b = (freqs >= FREQ_GAMMA[0])         & (freqs < FREQ_GAMMA[1])
+
+        # Ambil baris frekuensi yang sesuai tiap pita
+        spec_r = mean_spec[mask_r, :]   # (n_theta_alpha_bins, n_time)
+        spec_g = mean_spec[mask_g, :]   # (n_beta_bins, n_time)
+        spec_b = mean_spec[mask_b, :]   # (n_gamma_bins, n_time)
+
+        # Normalisasi dan resize masing-masing menjadi gambar 224×224
+        r_img = Image.fromarray(self.normalize_spec(spec_r)).resize(
+            (IMG_SIZE, IMG_SIZE), Image.BILINEAR)
+        g_img = Image.fromarray(self.normalize_spec(spec_g)).resize(
+            (IMG_SIZE, IMG_SIZE), Image.BILINEAR)
+        b_img = Image.fromarray(self.normalize_spec(spec_b)).resize(
+            (IMG_SIZE, IMG_SIZE), Image.BILINEAR)
+
+        # Gabung menjadi satu gambar RGB
+        rgb = Image.merge('RGB', [r_img, g_img, b_img])
+        return rgb
+
+# ==============================================================
+# 3. OFFLINE PREPROCESSING ( PENGGANTI PREPROCESS.PY )
+# ==============================================================
+
+def run_offline_preprocessing(data_dir, output_dir, label_path):
+    """Fungsi utama untuk menghasilkan dataset gambar fisik di disk."""
+    if not os.path.exists(output_dir): os.makedirs(output_dir)
+    
+    # Mapping label: -1, 0, 1 -> 0 (Neg), 1 (Net), 2 (Pos)
+    df_label = pd.read_csv(label_path, sep=';')
+    y_labels = (df_label['label'].values + 1).tolist()
+    
+    proc = SpectrogramProcessor()
+    
+    # PERBAIKAN ERROR INDEX: Filter hanya file yang memiliki underscore (mengabaikan label.mat)
+    mat_files = sorted([f for f in os.listdir(data_dir) if f.endswith('.mat') and '_' in f])
+    
+    print(f"[INFO] Memulai Preprocessing Sinyal EEG ke Gambar PNG...")
+    for f in tqdm(mat_files):
+        subj_id = f.split('_')[0]
+        # Deteksi sesi dari nama file (misal: 1_20131027.mat)
+        sesi_id = f.split('_')[1].split('.')[0]
+        
+        mat = loadmat(os.path.join(data_dir, f))
+        # Ambil key eeg1 - eeg15 secara urut
+        eeg_keys = sorted([k for k in mat.keys() if 'eeg' in k.lower()], 
+                          key=lambda x: int(re.findall(r'\d+', x)[-1]))
+        
+        for t_idx, key in enumerate(eeg_keys):
+            eeg_signal = mat[key]
+            label = y_labels[t_idx]
+            
+            # Batasi panjang segmen (Truncation)
+            total_pts = eeg_signal.shape[1]
+            n_segments = min(total_pts // SAMPLE_LEN, MAX_SEGMENTS)
+            
+            for s_idx in range(n_segments):
+                seg_data = eeg_signal[:, s_idx*SAMPLE_LEN : (s_idx+1)*SAMPLE_LEN]
+                img = proc.generate_rgb(seg_data)
+                
+                # Penamaan Unik: subj{id}_sesi{tgl}_trial{id}_seg{no}_label{id}.png
+                fname = f"subj{subj_id}_sesi{sesi_id}_trial{t_idx+1:02d}_seg{s_idx:02d}_label{label}.png"
+                img.save(os.path.join(output_dir, fname))
+
+# ==============================================================
+# 4. DATASET CLASS ( MURNI MODE GAMBAR )
+# ==============================================================
+
+class SEEDDataset(Dataset):
+    """Dataset yang hanya membaca file PNG hasil precompute."""
+    
+    def __init__(self, img_dir, subject_ids=None, transform=None):
+        self.img_dir = img_dir
+        # Subject_ids dalam format list string, misal: ['1', '2', '3']
+        self.target_subs = [str(sid).lstrip('0') for sid in subject_ids] if subject_ids else None
+        
+        self.transform = transform if transform else transforms.Compose([
+            transforms.ToTensor(),
+            transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
         ])
+        
+        self.file_list = self._scan_files()
+        print(f"[DATASET] Subjek: {self.target_subs if self.target_subs else 'ALL'} | Gambar: {len(self.file_list)}")
 
-        result = []
-        for fname in all_files:
-            parts   = fname.split('_')
+    def _scan_files(self):
+        valid_samples = []
+        for f in os.listdir(self.img_dir):
+            if f.endswith('.png'):
+                # Ekstrak ID Subjek dari format nama 'subj01_...' -> '1'
+                sid = f.split('_')[0].replace('subj', '').lstrip('0')
+                if self.target_subs is None or sid in self.target_subs:
+                    label = int(f.split('_label')[-1].split('.')[0])
+                    valid_samples.append((os.path.join(self.img_dir, f), label))
+        return valid_samples
 
-            # subj_id selalu di bagian pertama: 'subj01' → '1'
-            subj_id = parts[0].replace('subj', '').lstrip('0') or '0'
-
-            if subj_id not in self.target_subs:
-                continue
-
-            # label selalu di bagian terakhir: 'label2.png' → 2
-            label_part = parts[-1].replace('label', '').replace('.png', '')
-            label      = int(label_part)
-            result.append((os.path.join(self.img_dir, fname), label))
-
-        return result
-
-    # ----------------------------------------------------------
-    def _collect_trials(self):
-        """Kumpulkan metadata semua trial dari semua file .mat."""
-        trials    = []
-        mat_files = list_mat_files(self.data_dir)
-        for mat_file in mat_files:
-            path    = os.path.join(self.data_dir, mat_file)
-            subj_id = mat_file.split('_')[0]
-            mat     = loadmat(path)
-            keys    = detect_eeg_keys(mat)
-            for i, key in enumerate(keys):
-                label = self.labels[i] if i < len(self.labels) else None
-                trials.append((subj_id, path, key, label))
-        return trials
-
-    # ----------------------------------------------------------
     def __len__(self):
-        return len(self.data)
+        return len(self.file_list)
 
     def __getitem__(self, idx):
-        if self.mode == 'image':
-            # Hanya baca PNG — ringan di CPU
-            img_path, label = self.data[idx]
-            img    = Image.open(img_path).convert('RGB')
-            tensor = transforms.ToTensor()(img)
-            return tensor, torch.tensor(label, dtype=torch.long)
-
-        else:
-            # Mode fallback — baca .mat → STFT
-            subj_id, path, key, label = self.data[idx]
-            eeg      = loadmat(path)[key]
-            segments = segment_eeg(eeg)
-            seg      = random.choice(segments)
-            tensor   = segment_to_rgb_image(seg)
-            return tensor, torch.tensor(label, dtype=torch.long)
-
+        path, label = self.file_list[idx]
+        image = Image.open(path).convert('RGB')
+        return self.transform(image), torch.tensor(label, dtype=torch.long)
 
 # ==============================================================
-# TESTING SCRIPT
+# ENTRY POINT: EKSEKUSI PREPROCESS
 # ==============================================================
-
 if __name__ == "__main__":
-    DATA_DIR   = "/kaggle/input/datasets/tawakkal19/eeg-seed-200hz/Preprocessed_EEG"
+    # Sesuaikan path direktori sesuai lingkungan kerja (Local/Kaggle)
+    BASE_DIR   = "/kaggle/input/datasets/tawakkal19/eeg-seed-200hz/Preprocessed_EEG"
     LABEL_PATH = "/kaggle/input/datasets/tawakkal19/kode-eeg/label.csv"
-
-    explore_dataset(DATA_DIR, LABEL_PATH)
-
-    subject_ids = get_subject_ids(DATA_DIR)
-    folds       = subject_wise_kfold(subject_ids)
-    print_fold_info(folds)
-
-    print("=== Uji EEGDataset (mode fallback) ===")
-    train_ds = EEGDataset(DATA_DIR, LABEL_PATH, fold=0, split='train')
-    val_ds   = EEGDataset(DATA_DIR, LABEL_PATH, fold=0, split='val')
-
-    print(f"Train: {len(train_ds)} trial | Val: {len(val_ds)} trial")
-
-    img_tensor, lbl = train_ds[0]
-    label_names     = {0: 'Negatif', 1: 'Netral', 2: 'Positif'}
-    print(f"\nContoh output:")
-    print(f"  Tensor shape : {img_tensor.shape}")
-    print(f"  Label        : {lbl.item()} ({label_names[lbl.item()]})")
-    print(f"  Nilai min/max: {img_tensor.min():.3f} / {img_tensor.max():.3f}")
-
-    img_np = img_tensor.permute(1, 2, 0).numpy()
-    plt.figure(figsize=(6, 6))
-    plt.imshow(img_np)
-    plt.title(f"Spektrogram RGB — Label: {label_names[lbl.item()]}")
-    plt.axis('off')
-    plt.tight_layout()
-    plt.savefig("sample_spectrogram.png", dpi=100)
-    plt.show()
-    print("\n✓ Gambar spektrogram disimpan ke sample_spectrogram.png")
+    OUTPUT_DIR = "/kaggle/working/spectrogram_images"
+    
+    # Jalankan pembuatan gambar (Hanya perlu dilakukan satu kali)
+    run_offline_preprocessing(BASE_DIR, OUTPUT_DIR, LABEL_PATH)
