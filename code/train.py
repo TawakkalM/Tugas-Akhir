@@ -24,7 +24,6 @@ LABEL_NAMES  = ['Negatif', 'Netral', 'Positif']
 NUM_CLASSES  = 3
 
 def get_wib_time():
-    """Mendapatkan waktu saat ini dalam zona waktu WIB (UTC+7)."""
     wib_tz = timezone(timedelta(hours=7))
     return datetime.now(wib_tz).strftime("%d-%m-%Y %H:%M:%S")
 
@@ -33,11 +32,18 @@ def get_wib_time():
 # ==============================================================
 
 def init_wandb(args, fold=None, run_type='fold'):
-    """Inisialisasi satu run wandb."""
     if args.wandb_off:
         return None
 
     run_name = f"{args.model}_fold{fold+1}" if run_type == 'fold' else f"{args.model}_summary"
+
+    # Penentuan strategi otomatis untuk log WandB
+    if args.model == 'resnet18' and args.pretrained:
+        strategy_name = "progressive_unfreezing"
+    elif args.model == 'resnet18' and not args.pretrained:
+        strategy_name = "train_from_scratch"
+    else:
+        strategy_name = "standard"
 
     run = wandb.init(
         project = args.wandb_project,
@@ -46,16 +52,22 @@ def init_wandb(args, fold=None, run_type='fold'):
         group   = args.model,
         job_type= run_type,
         config  = {
-            "model"        : args.model,
-            "fold"         : fold + 1 if fold is not None else "all",
-            "n_splits"     : args.n_splits,
-            "epochs"       : args.epochs,
-            "batch_size"   : args.batch_size,
-            "lr"           : args.lr,
-            "weight_decay" : args.weight_decay,
-            "patience"     : args.patience,
-            "img_dir"      : args.img_dir,
-            "num_classes"  : NUM_CLASSES,
+            "model"            : args.model,
+            "pretrained"       : args.pretrained if args.model == 'resnet18' else False,
+            "strategy"         : strategy_name,
+            "phase2_epoch"     : args.phase2_epoch if strategy_name == "progressive_unfreezing" else None,
+            "phase3_epoch"     : args.phase3_epoch if strategy_name == "progressive_unfreezing" else None,
+            "lr_phase2_mult"   : args.lr_phase2_mult if strategy_name == "progressive_unfreezing" else None,
+            "lr_phase3_mult"   : args.lr_phase3_mult if strategy_name == "progressive_unfreezing" else None,
+            "fold"             : fold + 1 if fold is not None else "all",
+            "n_splits"         : args.n_splits,
+            "epochs"           : args.epochs,
+            "batch_size"       : args.batch_size,
+            "lr"               : args.lr,
+            "weight_decay"     : args.weight_decay,
+            "patience"         : args.patience,
+            "img_dir"          : args.img_dir,
+            "num_classes"      : NUM_CLASSES,
         },
         reinit = True,
     )
@@ -198,26 +210,26 @@ def train_one_fold(fold, model, train_loader, val_loader, args, device, save_dir
 
     for epoch in range(1, args.epochs + 1):
 
-        # --- Progressive Unfreezing ---
-        # Fase 2: buka layer4, lr sangat kecil agar tidak agresif
-        if epoch == args.phase2_epoch:
-            print(f"\n  [Fase 2] Epoch {epoch} — membuka layer4")
-            unfreeze_layers(model, phase=2)
-            optimizer = torch.optim.Adam(
-                filter(lambda p: p.requires_grad, model.parameters()),
-                lr=args.lr * 0.01,       # 1e-4 × 0.01 = 1e-6
-                weight_decay=args.weight_decay
-            )
+        # Hanya lakukan unfreezing bertahap JIKA model Pretrained
+        if args.model == 'resnet18' and args.pretrained:
+            if epoch == args.phase2_epoch:
+                print(f"\n  [Fase 2] Epoch {epoch} — membuka layer4")
+                unfreeze_layers(model, phase=2)
+                optimizer = torch.optim.Adam(
+                    filter(lambda p: p.requires_grad, model.parameters()),
+                    lr=args.lr * args.lr_phase2_mult,
+                    weight_decay=args.weight_decay
+                )
 
-        # Fase 3: buka layer3, lr lebih kecil lagi
-        elif epoch == args.phase3_epoch:
-            print(f"\n  [Fase 3] Epoch {epoch} — membuka layer3")
-            unfreeze_layers(model, phase=3)
-            optimizer = torch.optim.Adam(
-                filter(lambda p: p.requires_grad, model.parameters()),
-                lr=args.lr * 0.001,      # 1e-4 × 0.001 = 1e-7
-                weight_decay=args.weight_decay
-            )
+            elif epoch == args.phase3_epoch:
+                print(f"\n  [Fase 3] Epoch {epoch} — membuka layer3")
+                unfreeze_layers(model, phase=3)
+                optimizer = torch.optim.Adam(
+                    filter(lambda p: p.requires_grad, model.parameters()),
+                    lr=args.lr * args.lr_phase3_mult,
+                    weight_decay=args.weight_decay
+                )
+            
         model.train()
         running_loss, running_n = 0.0, 0
         pbar = tqdm(train_loader, desc=f"Fold {fold+1} | Epoch {epoch:02d}/{args.epochs} [Train]", leave=False, ncols=90, unit="batch")
@@ -288,8 +300,7 @@ def run_all_folds(args):
     save_dir = os.path.join(args.checkpoint_dir, args.model)
     os.makedirs(save_dir, exist_ok=True)
 
-    # Inisialisasi 5-Fold Cross Validation secara mandiri
-    all_subjects = np.arange(1, 16) # Subjek 1 hingga 15
+    all_subjects = np.arange(1, 16)
     kf = KFold(n_splits=args.n_splits, shuffle=False)
     folds = list(kf.split(all_subjects))
 
@@ -302,7 +313,6 @@ def run_all_folds(args):
         train_subs = all_subjects[train_idx].tolist()
         val_subs   = all_subjects[val_idx].tolist()
 
-        # Inisialisasi dataset dengan argumen yang baru (img_dir dan subject_ids)
         train_ds = SEEDDataset(img_dir=args.img_dir, subject_ids=train_subs)
         val_ds   = SEEDDataset(img_dir=args.img_dir, subject_ids=val_subs)
 
@@ -311,7 +321,7 @@ def run_all_folds(args):
         val_loader   = DataLoader(val_ds, batch_size=args.batch_size, shuffle=False,
                                   num_workers=args.num_workers, pin_memory=device.type == 'cuda')
 
-        model = build_resnet18(num_classes=NUM_CLASSES, pretrained=True) if args.model == 'resnet18' else BaselineCNN2D(num_classes=NUM_CLASSES)
+        model = build_resnet18(num_classes=NUM_CLASSES, pretrained=args.pretrained) if args.model == 'resnet18' else BaselineCNN2D(num_classes=NUM_CLASSES)
         model.to(device)
 
         if fold == 0: print_model_summary(model, args.model.upper())
@@ -321,7 +331,6 @@ def run_all_folds(args):
 
         all_acc.append(acc); all_prec.append(prec); all_rec.append(rec); all_f1.append(f1); all_cm.append(cm)
 
-    # ==== Ringkasan Akhir Seluruh Fold ====
     avg_cm = np.mean(all_cm, axis=0)
 
     print(f"\n{'='*60}")
@@ -352,10 +361,8 @@ def run_all_folds(args):
 def parse_args():
     parser = argparse.ArgumentParser(description='Training ResNet-18 / Baseline CNN untuk klasifikasi emosi EEG')
 
-    # Hanya membutuhkan img_dir karena pre-processing sudah dilakukan di luar train.py
     parser.add_argument('--img-dir', type=str, default='/kaggle/working/spectrograms',
-                        help='Path ke folder PNG hasil data_reader.py (offline preprocessing).')
-
+                        help='Path ke folder PNG hasil data_reader.py.')
     parser.add_argument('--model',        type=str,   default='resnet18', choices=['resnet18', 'baseline'])
     parser.add_argument('--epochs',       type=int,   default=50)
     parser.add_argument('--batch-size',   type=int,   default=32)
@@ -363,11 +370,16 @@ def parse_args():
     parser.add_argument('--weight-decay', type=float, default=1e-4)
     parser.add_argument('--patience',     type=int,   default=15)
 
-    # Progressive unfreezing — epoch mulai tiap fase
-    parser.add_argument('--phase2-epoch', type=int, default=11,
-                        help='Epoch mulai buka layer4 (default: 11)')
-    parser.add_argument('--phase3-epoch', type=int, default=26,
-                        help='Epoch mulai buka layer3 (default: 26)')
+    # Argumen Opsi Pretrained (Aktif secara default)
+    parser.add_argument('--pretrained', action='store_true', default=True, help='Gunakan bobot ImageNet')
+    parser.add_argument('--no-pretrained', action='store_false', dest='pretrained', help='Latih ResNet dari awal')
+
+    # Argumen Progressive Unfreezing
+    parser.add_argument('--phase2-epoch', type=int, default=11)
+    parser.add_argument('--phase3-epoch', type=int, default=56)
+    parser.add_argument('--lr-phase2-mult', type=float, default=0.01, help='Pengali LR Fase 2 (default: 0.01)')
+    parser.add_argument('--lr-phase3-mult', type=float, default=0.001, help='Pengali LR Fase 3 (default: 0.001)')
+
     parser.add_argument('--n-splits',     type=int,   default=5)
     parser.add_argument('--fold-only',    type=int,   default=None)
     parser.add_argument('--num-workers',  type=int,   default=2)
