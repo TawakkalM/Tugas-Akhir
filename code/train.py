@@ -366,7 +366,7 @@ def parse_args():
     parser.add_argument('--model',        type=str,   default='resnet18', choices=['resnet18', 'baseline'])
     parser.add_argument('--epochs',       type=int,   default=50)
     parser.add_argument('--batch-size',   type=int,   default=32)
-    parser.add_argument('--lr',           type=float, default=1e-6)
+    parser.add_argument('--lr',           type=float, default=1e-4)
     parser.add_argument('--weight-decay', type=float, default=1e-4)
     parser.add_argument('--patience',     type=int,   default=15)
 

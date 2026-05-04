@@ -31,13 +31,30 @@ STFT_NOVERLAP = 128    # Overlap 50%
 IMG_SIZE      = 224    # Dimensi input ResNet-18
 
 # ------------------------------------------------------------------
-# [V2] Pemetaan RGB berdasarkan PITA FREKUENSI otak
+# [V1 - ORIGINAL PROPOSAL] Pemetaan RGB berdasarkan ZONA OTAK
+# Merah  = Frontal
+# Hijau  = Central & Temporal
+# Biru   = Parietal & Occipital
 # ------------------------------------------------------------------
-FREQ_THETA_ALPHA = (4,  13)   # R — Theta + Alpha
-FREQ_BETA        = (13, 30)   # G — Beta
-FREQ_GAMMA       = (30, 45)   # B — Gamma
 
-# Semua 62 kanal digunakan untuk ketiga saluran
+FRONTAL_CH = [
+    'FP1','FPZ','FP2','AF3','AF4',
+    'F7','F5','F3','F1','FZ','F2','F4','F6','F8',
+    'FT7','FC5','FC3','FC1','FCZ','FC2','FC4','FC6','FT8'
+]
+
+CENTRAL_TEMPORAL_CH = [
+    'T7','C5','C3','C1','CZ','C2','C4','C6','T8',
+    'TP7','CP5','CP3','CP1','CPZ','CP2','CP4','CP6','TP8'
+]
+
+PARIETAL_OCCIPITAL_CH = [
+    'P7','P5','P3','P1','PZ','P2','P4','P6','P8',
+    'PO7','PO5','PO3','POZ','PO4','PO6','PO8',
+    'CB1','O1','OZ','O2','CB2'
+]
+
+# Urutan lengkap 62 kanal SEED (indeks 0–61)
 SEED_62CH = [
     'FP1','FPZ','FP2','AF3','AF4','F7','F5','F3','F1','FZ','F2','F4','F6','F8',
     'FT7','FC5','FC3','FC1','FCZ','FC2','FC4','FC6','FT8','T7','C5','C3','C1','CZ',
@@ -48,59 +65,59 @@ SEED_62CH = [
 
 ALL_CH_IDX = list(range(len(SEED_62CH)))
 
+def _zone_indices(zone_names):
+    return [SEED_62CH.index(ch) for ch in zone_names if ch in SEED_62CH]
+
+# Pemetaan indeks array berdasarkan zona
+IDX_FRONTAL   = _zone_indices(FRONTAL_CH)
+IDX_CENTRAL_T = _zone_indices(CENTRAL_TEMPORAL_CH)
+IDX_PARIETAL  = _zone_indices(PARIETAL_OCCIPITAL_CH)
+
 # ==============================================================
 # 2. LOGIKA PEMROSESAN SPEKTROGRAM RGB
 # ==============================================================
 
 class SpectrogramProcessor:
     @staticmethod
-    def compute_stft_magnitude(channel_data):
-        _, _, Zxx = stft(channel_data, fs=SAMPLE_RATE,
-                         nperseg=STFT_NPERSEG, noverlap=STFT_NOVERLAP)
-        magnitude = np.abs(Zxx)
-        return 10 * np.log10(magnitude + 1e-10)
-
-    @staticmethod
     def normalize_spec(spec):
+        """Normalisasi Min-Max dengan clipping persentil 2-98."""
         p_low, p_high = np.percentile(spec, [2, 98])
         if p_high - p_low < 1e-10:
             return np.zeros_like(spec, dtype=np.uint8)
         spec_clipped = np.clip(spec, p_low, p_high)
         return ((spec_clipped - p_low) / (p_high - p_low) * 255).astype(np.uint8)
 
-    @staticmethod
-    def extract_freq_band(spec_db, freqs, freq_range):
-        mask = (freqs >= freq_range[0]) & (freqs < freq_range[1])
-        if not np.any(mask):
-            return np.zeros(spec_db.shape[1])
-        return np.mean(spec_db[mask, :], axis=0)
-
     def generate_rgb(self, segment):
-        freqs, _, Zxx_first = stft(segment[0], fs=SAMPLE_RATE,
-                                   nperseg=STFT_NPERSEG, noverlap=STFT_NOVERLAP)
-
+        """
+        Bangun citra RGB berdasarkan ZONA OTAK.
+        1. Hitung STFT semua 62 kanal.
+        2. Kelompokkan kanal berdasarkan zona spasial (Frontal, Central, Parietal).
+        3. Rata-ratakan energi matriks STFT per zona.
+        4. Susun ke dalam saluran (R, G, B).
+        """
+        # Kumpulkan spektrogram semua kanal
         all_specs = []
         for ch_idx in ALL_CH_IDX:
             _, _, Zxx = stft(segment[ch_idx], fs=SAMPLE_RATE,
                              nperseg=STFT_NPERSEG, noverlap=STFT_NOVERLAP)
+            # Konversi magnitude ke skala dB
             spec_db = 10 * np.log10(np.abs(Zxx) + 1e-10)
             all_specs.append(spec_db)
 
+        # Ubah ke array numpy dengan shape (62_kanal, frekuensi, waktu)
         all_specs = np.array(all_specs)
-        mean_spec = np.mean(all_specs, axis=0)
 
-        mask_r = (freqs >= FREQ_THETA_ALPHA[0]) & (freqs < FREQ_THETA_ALPHA[1])
-        mask_g = (freqs >= FREQ_BETA[0])         & (freqs < FREQ_BETA[1])
-        mask_b = (freqs >= FREQ_GAMMA[0])         & (freqs < FREQ_GAMMA[1])
+        # Ekstraksi dan rata-rata matriks berdasarkan indeks ZONA OTAK
+        spec_r = np.mean(all_specs[IDX_FRONTAL, :, :], axis=0)
+        spec_g = np.mean(all_specs[IDX_CENTRAL_T, :, :], axis=0)
+        spec_b = np.mean(all_specs[IDX_PARIETAL, :, :], axis=0)
 
-        spec_r = mean_spec[mask_r, :]
-        spec_g = mean_spec[mask_g, :]
-        spec_b = mean_spec[mask_b, :]
-
+        # Normalisasi dan resize masing-masing matriks zona menjadi gambar 224x224
         r_img = Image.fromarray(self.normalize_spec(spec_r)).resize((IMG_SIZE, IMG_SIZE), Image.BILINEAR)
         g_img = Image.fromarray(self.normalize_spec(spec_g)).resize((IMG_SIZE, IMG_SIZE), Image.BILINEAR)
         b_img = Image.fromarray(self.normalize_spec(spec_b)).resize((IMG_SIZE, IMG_SIZE), Image.BILINEAR)
 
+        # Gabung menjadi satu gambar RGB utuh
         rgb = Image.merge('RGB', [r_img, g_img, b_img])
         return rgb
 
@@ -118,7 +135,7 @@ def run_offline_preprocessing(data_dir, output_dir, label_path):
     
     mat_files = sorted([f for f in os.listdir(data_dir) if f.endswith('.mat') and '_' in f])
     
-    print(f"[INFO] Memulai Preprocessing Sinyal EEG ke Gambar PNG...")
+    print(f"[INFO] Memulai Preprocessing Sinyal EEG ke Gambar PNG (Mode ZONA OTAK)...")
     for f in tqdm(mat_files):
         subj_id = f.split('_')[0]
         sesi_id = f.split('_')[1].split('.')[0]
@@ -180,7 +197,7 @@ class SEEDDataset(Dataset):
 # ENTRY POINT: EKSEKUSI PREPROCESS
 # ==============================================================
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description='Offline Preprocessing EEG ke Spektrogram RGB')
+    parser = argparse.ArgumentParser(description='Offline Preprocessing EEG ke Spektrogram RGB (Berdasarkan Zona Otak)')
     parser.add_argument('--data-dir', type=str, default="/kaggle/input/datasets/tawakkal19/eeg-seed-200hz/Preprocessed_EEG")
     parser.add_argument('--label-path', type=str, default="/kaggle/input/datasets/tawakkal19/kode-eeg/label.csv")
     parser.add_argument('--output-dir', type=str, default="/kaggle/working/spectrogram_images")
