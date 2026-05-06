@@ -15,42 +15,20 @@ def build_resnet18(num_classes=NUM_CLASSES, pretrained=True):
     weights = tv_models.ResNet18_Weights.DEFAULT if pretrained else None
     model   = tv_models.resnet18(weights=weights)
 
-    # Hanya bekukan layer jika menggunakan bobot ImageNet
-    if pretrained:
-        for param in model.parameters():
-            param.requires_grad = False
-        print("  [Init] Pretrained=True: Membekukan konvolusi untuk Fase 1.")
-    else:
-        for param in model.parameters():
-            param.requires_grad = True
-        print("  [Init] Pretrained=False: Semua parameter dilatih dari nol (Scratch).")
-
+    # Ganti FC layer terakhir dan tambahkan Dropout 0.3
     in_features = model.fc.in_features
     model.fc = nn.Sequential(
         nn.Dropout(p=0.3),
         nn.Linear(in_features, num_classes)
     )
-    
-    # FC Layer harus selalu bisa dilatih dalam skenario apapun
-    for param in model.fc.parameters():
+
+    # Pastikan SEMUA parameter bisa dilatih (Full Fine-Tuning) sejak awal
+    for param in model.parameters():
         param.requires_grad = True
+        
+    print(f"  [Init] ResNet-18 dimuat. Pretrained={pretrained}. Full Fine-Tuning aktif.")
 
     return model
-
-def unfreeze_layers(model, phase):
-    if phase == 2:
-        for param in model.layer4.parameters():
-            param.requires_grad = True
-        print("  [Unfreeze] layer4 dibuka untuk dilatih")
-
-    elif phase == 3:
-        for param in model.layer3.parameters():
-            param.requires_grad = True
-        print("  [Unfreeze] layer3 dibuka untuk dilatih")
-
-    trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
-    total     = sum(p.numel() for p in model.parameters())
-    print(f"  [Unfreeze] Trainable: {trainable:,} / {total:,} parameter")
 
 # ==============================================================
 # TAHAP 5B — MODEL BASELINE: CNN-2D Standar

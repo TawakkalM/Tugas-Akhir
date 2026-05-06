@@ -15,7 +15,7 @@ import wandb
 from tqdm import tqdm
 
 from data_reader import SEEDDataset
-from models import build_resnet18, BaselineCNN2D, print_model_summary, unfreeze_layers
+from models import build_resnet18, BaselineCNN2D, print_model_summary
 
 # ==============================================================
 # KONFIGURASI GLOBAL
@@ -36,14 +36,7 @@ def init_wandb(args, fold=None, run_type='fold'):
         return None
 
     run_name = f"{args.model}_fold{fold+1}" if run_type == 'fold' else f"{args.model}_summary"
-
-    # Penentuan strategi otomatis untuk log WandB
-    if args.model == 'resnet18' and args.pretrained:
-        strategy_name = "progressive_unfreezing"
-    elif args.model == 'resnet18' and not args.pretrained:
-        strategy_name = "train_from_scratch"
-    else:
-        strategy_name = "standard"
+    strategy_name = "full_finetuning" if args.pretrained else "train_from_scratch"
 
     run = wandb.init(
         project = args.wandb_project,
@@ -55,10 +48,6 @@ def init_wandb(args, fold=None, run_type='fold'):
             "model"            : args.model,
             "pretrained"       : args.pretrained if args.model == 'resnet18' else False,
             "strategy"         : strategy_name,
-            "phase2_epoch"     : args.phase2_epoch if strategy_name == "progressive_unfreezing" else None,
-            "phase3_epoch"     : args.phase3_epoch if strategy_name == "progressive_unfreezing" else None,
-            "lr_phase2_mult"   : args.lr_phase2_mult if strategy_name == "progressive_unfreezing" else None,
-            "lr_phase3_mult"   : args.lr_phase3_mult if strategy_name == "progressive_unfreezing" else None,
             "fold"             : fold + 1 if fold is not None else "all",
             "n_splits"         : args.n_splits,
             "epochs"           : args.epochs,
@@ -112,6 +101,7 @@ def log_summary(run, all_acc, all_prec, all_rec, all_f1, avg_cm_path):
 # ==============================================================
 
 def plot_training_history(fold, epochs_ran, train_losses, val_losses, val_accs, save_dir):
+    import matplotlib.pyplot as plt
     ep = range(1, epochs_ran + 1)
     fig, axes = plt.subplots(1, 2, figsize=(14, 5))
 
@@ -137,6 +127,7 @@ def plot_training_history(fold, epochs_ran, train_losses, val_losses, val_accs, 
     plt.close()
 
 def plot_confusion_matrix(fold, cm, save_dir, model_name):
+    import matplotlib.pyplot as plt
     fig, ax = plt.subplots(figsize=(6, 5))
     sns.heatmap(cm, annot=True, fmt='d', cmap='Blues',
                 xticklabels=LABEL_NAMES, yticklabels=LABEL_NAMES, ax=ax)
@@ -149,6 +140,7 @@ def plot_confusion_matrix(fold, cm, save_dir, model_name):
     plt.close()
 
 def plot_average_confusion_matrix(avg_cm, save_dir, model_name):
+    import matplotlib.pyplot as plt
     fig, ax = plt.subplots(figsize=(6, 5))
     sns.heatmap(avg_cm, annot=True, fmt='.1f', cmap='Blues',
                 xticklabels=LABEL_NAMES, yticklabels=LABEL_NAMES, ax=ax)
@@ -197,6 +189,7 @@ def evaluate(model, loader, criterion, device):
 
 def train_one_fold(fold, model, train_loader, val_loader, args, device, save_dir, run=None):
     criterion = nn.CrossEntropyLoss()
+    # Optimizer didefinisikan satu kali karena tidak ada pergantian lr di tengah jalan
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
 
     best_val_loss   = float('inf')
@@ -209,27 +202,7 @@ def train_one_fold(fold, model, train_loader, val_loader, args, device, save_dir
     print(f"{'='*60}")
 
     for epoch in range(1, args.epochs + 1):
-
-        # Hanya lakukan unfreezing bertahap JIKA model Pretrained
-        if args.model == 'resnet18' and args.pretrained:
-            if epoch == args.phase2_epoch:
-                print(f"\n  [Fase 2] Epoch {epoch} — membuka layer4")
-                unfreeze_layers(model, phase=2)
-                optimizer = torch.optim.Adam(
-                    filter(lambda p: p.requires_grad, model.parameters()),
-                    lr=args.lr * args.lr_phase2_mult,
-                    weight_decay=args.weight_decay
-                )
-
-            elif epoch == args.phase3_epoch:
-                print(f"\n  [Fase 3] Epoch {epoch} — membuka layer3")
-                unfreeze_layers(model, phase=3)
-                optimizer = torch.optim.Adam(
-                    filter(lambda p: p.requires_grad, model.parameters()),
-                    lr=args.lr * args.lr_phase3_mult,
-                    weight_decay=args.weight_decay
-                )
-            
+        
         model.train()
         running_loss, running_n = 0.0, 0
         pbar = tqdm(train_loader, desc=f"Fold {fold+1} | Epoch {epoch:02d}/{args.epochs} [Train]", leave=False, ncols=90, unit="batch")
@@ -373,12 +346,6 @@ def parse_args():
     # Argumen Opsi Pretrained (Aktif secara default)
     parser.add_argument('--pretrained', action='store_true', default=True, help='Gunakan bobot ImageNet')
     parser.add_argument('--no-pretrained', action='store_false', dest='pretrained', help='Latih ResNet dari awal')
-
-    # Argumen Progressive Unfreezing
-    parser.add_argument('--phase2-epoch', type=int, default=11)
-    parser.add_argument('--phase3-epoch', type=int, default=56)
-    parser.add_argument('--lr-phase2-mult', type=float, default=0.01, help='Pengali LR Fase 2 (default: 0.01)')
-    parser.add_argument('--lr-phase3-mult', type=float, default=0.001, help='Pengali LR Fase 3 (default: 0.001)')
 
     parser.add_argument('--n-splits',     type=int,   default=5)
     parser.add_argument('--fold-only',    type=int,   default=None)
