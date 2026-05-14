@@ -189,8 +189,7 @@ def evaluate(model, loader, criterion, device):
 # ==============================================================
 
 def train_one_fold(fold, model, train_loader, val_loader, args, device, save_dir, run=None):
-    # ---> Eksperimen 11: Menambahkan Label Smoothing 0.1
-    criterion = nn.CrossEntropyLoss(label_smoothing=0.1)
+    criterion = nn.CrossEntropyLoss()
     # Optimizer didefinisikan satu kali karena tidak ada pergantian lr di tengah jalan
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
 
