@@ -193,6 +193,12 @@ def train_one_fold(fold, model, train_loader, val_loader, args, device, save_dir
     # Optimizer didefinisikan satu kali karena tidak ada pergantian lr di tengah jalan
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
 
+    # ---> Eksperimen 13: Menambahkan ReduceLROnPlateau Scheduler
+    # mode='min' karena kita memantau loss agar turun.
+    # factor=0.5 berarti LR akan dipotong setengah (misal 1e-4 jadi 5e-5).
+    # patience=5 berarti jika 5 epoch val_loss tidak membaik, LR diturunkan.
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=5)
+
     best_val_loss   = float('inf')
     patience_count  = 0
     best_model_path = os.path.join(save_dir, f'fold{fold+1}_best_model.pth')
@@ -222,6 +228,9 @@ def train_one_fold(fold, model, train_loader, val_loader, args, device, save_dir
 
         train_loss = running_loss / running_n
         val_loss, val_acc, val_prec, val_rec, val_f1, _ = evaluate(model, val_loader, criterion, device)
+
+        # ---> PERUBAHAN: Memperbarui scheduler berdasarkan Validation Loss
+        scheduler.step(val_loss)
 
         # ---> PERUBAHAN: Mengambil learning rate saat ini dari optimizer
         current_lr = optimizer.param_groups[0]['lr']
