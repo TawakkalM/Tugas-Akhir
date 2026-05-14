@@ -62,14 +62,15 @@ def init_wandb(args, fold=None, run_type='fold'):
     )
     return run
 
-def log_epoch(run, epoch, train_loss, val_loss, val_acc, val_f1):
+def log_epoch(run, epoch, train_loss, val_loss, val_acc, val_f1, lr):
     if run:
         wandb.log({
-            "epoch"      : epoch,
-            "train/loss" : train_loss,
-            "val/loss"   : val_loss,
-            "val/acc"    : val_acc,
-            "val/f1"     : val_f1,
+            "epoch"         : epoch,
+            "train/loss"    : train_loss,
+            "val/loss"      : val_loss,
+            "val/acc"       : val_acc,
+            "val/f1"        : val_f1,
+            "learning_rate" : lr, 
         }, step=epoch)
 
 def log_fold_result(run, fold, acc, precision, recall, f1, cm_path):
@@ -188,7 +189,8 @@ def evaluate(model, loader, criterion, device):
 # ==============================================================
 
 def train_one_fold(fold, model, train_loader, val_loader, args, device, save_dir, run=None):
-    criterion = nn.CrossEntropyLoss()
+    # ---> Eksperimen 11: Menambahkan Label Smoothing 0.1
+    criterion = nn.CrossEntropyLoss(label_smoothing=0.1)
     # Optimizer didefinisikan satu kali karena tidak ada pergantian lr di tengah jalan
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
 
@@ -222,6 +224,9 @@ def train_one_fold(fold, model, train_loader, val_loader, args, device, save_dir
         train_loss = running_loss / running_n
         val_loss, val_acc, val_prec, val_rec, val_f1, _ = evaluate(model, val_loader, criterion, device)
 
+        # ---> PERUBAHAN: Mengambil learning rate saat ini dari optimizer
+        current_lr = optimizer.param_groups[0]['lr']
+
         train_losses.append(train_loss)
         val_losses.append(val_loss)
         val_accs.append(val_acc)
@@ -229,7 +234,8 @@ def train_one_fold(fold, model, train_loader, val_loader, args, device, save_dir
         print(f"  [{get_wib_time()}] Epoch {epoch:02d}/{args.epochs} | "
               f"Train Loss: {train_loss:.4f} | Val Loss: {val_loss:.4f} | Val Acc: {val_acc:.4f} | F1: {val_f1:.4f}")
 
-        log_epoch(run, epoch, train_loss, val_loss, val_acc, val_f1)
+        # ---> PERUBAHAN: Memasukkan current_lr ke log WandB
+        log_epoch(run, epoch, train_loss, val_loss, val_acc, val_f1, current_lr)
 
         if val_loss < best_val_loss:
             best_val_loss = val_loss
