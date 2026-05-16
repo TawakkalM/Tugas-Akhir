@@ -189,7 +189,7 @@ def evaluate(model, loader, criterion, device):
 # ==============================================================
 
 def train_one_fold(fold, model, train_loader, val_loader, args, device, save_dir, run=None):
-    # ---> # Eksperimen 15: Label Smoothing + Lr 5e-5
+    # Eksperimen 16: Label Smoothing + Dropout 0.5
     criterion = nn.CrossEntropyLoss(label_smoothing=0.1)
     # Optimizer didefinisikan satu kali karena tidak ada pergantian lr di tengah jalan
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
@@ -345,7 +345,7 @@ def parse_args():
     parser.add_argument('--model',        type=str,   default='resnet18', choices=['resnet18', 'baseline'])
     parser.add_argument('--epochs',       type=int,   default=50)
     parser.add_argument('--batch-size',   type=int,   default=32)
-    parser.add_argument('--lr',           type=float, default=5e-5)
+    parser.add_argument('--lr',           type=float, default=1e-4)
     parser.add_argument('--weight-decay', type=float, default=1e-4)
     parser.add_argument('--patience',     type=int,   default=15)
 
