@@ -15,10 +15,10 @@ def build_resnet18(num_classes=NUM_CLASSES, pretrained=True):
     weights = tv_models.ResNet18_Weights.DEFAULT if pretrained else None
     model   = tv_models.resnet18(weights=weights)
 
-    # Ganti FC layer terakhir dan tambahkan Dropout 0.5
+    # Ganti FC layer terakhir dan tambahkan Dropout 0.3
     in_features = model.fc.in_features
     model.fc = nn.Sequential(
-        nn.Dropout(p=0.5),  # Eksperimen 16: Label Smoothing + Dropout 0.5
+        nn.Dropout(p=0.3),
         nn.Linear(in_features, num_classes)
     )
 
